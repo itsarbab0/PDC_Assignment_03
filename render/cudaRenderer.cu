@@ -365,18 +365,20 @@ shadePixel(int circleIndex, float2 pixelCenter, float3 p, float4* imagePtr) {
 
     // BEGIN SHOULD-BE-ATOMIC REGION
     // global memory read
+    
+    // Arbab from here We have to write code
+    // Replace this non-atomic code with atomic operations
 
-    float4 existingColor = *imagePtr;
-    float4 newColor;
-    newColor.x = alpha * rgb.x + oneMinusAlpha * existingColor.x;
-    newColor.y = alpha * rgb.y + oneMinusAlpha * existingColor.y;
-    newColor.z = alpha * rgb.z + oneMinusAlpha * existingColor.z;
-    newColor.w = alpha + existingColor.w;
-
-    // global memory write
-    *imagePtr = newColor;
-
+    // IMPLEMENTATION: Use atomic operations to update the pixel color
+    // The formula implements: newColor = alpha*rgb + (1-alpha)*oldColor
+    // Rewritten as: oldColor + alpha*(rgb - oldColor)
+    atomicAdd(&imagePtr->x, alpha * rgb.x - alpha * imagePtr->x);
+    atomicAdd(&imagePtr->y, alpha * rgb.y - alpha * imagePtr->y);
+    atomicAdd(&imagePtr->z, alpha * rgb.z - alpha * imagePtr->z);
+    atomicAdd(&imagePtr->w, alpha);
+    
     // END SHOULD-BE-ATOMIC REGION
+    // Arbab here we have ended - Part 1: Adding atomic operations
 }
 
 // kernelRenderCircles -- (CUDA device code)
@@ -384,6 +386,55 @@ shadePixel(int circleIndex, float2 pixelCenter, float3 p, float4* imagePtr) {
 // Each thread renders a circle.  Since there is no protection to
 // ensure order of update or mutual exclusion on the output image, the
 // resulting image will be incorrect.
+
+// Arbab from here We have to write code - Part 2: Implement pixel-based kernel
+// You need to implement a new pixel-centric kernel named kernelRenderPixels
+// that processes one pixel per thread and ensures correct ordering
+
+// IMPLEMENTATION: A pixel-based kernel where each thread handles one pixel
+__global__ void kernelRenderPixels() {
+    int pixelX = blockIdx.x * blockDim.x + threadIdx.x;
+    int pixelY = blockIdx.y * blockDim.y + threadIdx.y;
+
+    int width = cuConstRendererParams.imageWidth;
+    int height = cuConstRendererParams.imageHeight;
+
+    // Check if this thread's pixel is within image bounds
+    if (pixelX >= width || pixelY >= height)
+        return;
+
+    float invWidth = 1.f / width;
+    float invHeight = 1.f / height;
+    
+    // Calculate normalized coordinates of pixel center
+    float2 pixelCenterNorm = make_float2(invWidth * (static_cast<float>(pixelX) + 0.5f),
+                                         invHeight * (static_cast<float>(pixelY) + 0.5f));
+    
+    // Calculate pixel offset in the image buffer
+    int pixelOffset = 4 * (pixelY * width + pixelX);
+    float4* imgPtr = (float4*)(&cuConstRendererParams.imageData[pixelOffset]);
+    
+    // Process all circles in order to ensure correct transparency blending
+    for (int circleIndex = 0; circleIndex < cuConstRendererParams.numCircles; circleIndex++) {
+        int index3 = 3 * circleIndex;
+        float3 p = *(float3*)(&cuConstRendererParams.position[index3]);
+        float rad = cuConstRendererParams.radius[circleIndex];
+        
+        // Performance optimization: Quick bounds check before detailed circle test
+        float centerX = width * p.x;
+        float centerY = height * p.y;
+        float radiusInPixels = width * rad;
+        
+        if (pixelX >= centerX - radiusInPixels && pixelX <= centerX + radiusInPixels &&
+            pixelY >= centerY - radiusInPixels && pixelY <= centerY + radiusInPixels) {
+            // If pixel might be in circle's bounding box, do the detailed check
+            shadePixel(circleIndex, pixelCenterNorm, p, imgPtr);
+        }
+    }
+}
+
+// Arbab here we have ended - Part 2: Implement pixel-based kernel
+
 __global__ void kernelRenderCircles() {
 
     int index = blockIdx.x * blockDim.x + threadIdx.x;
@@ -636,10 +687,21 @@ CudaRenderer::advanceAnimation() {
 void
 CudaRenderer::render() {
 
-    // 256 threads per block is a healthy number
-    dim3 blockDim(256, 1);
-    dim3 gridDim((numCircles + blockDim.x - 1) / blockDim.x);
+    // Arbab from here We have to write code - Part 3: Update render function
+    // Instead of launching a thread per circle, implement a pixel-based approach
 
-    kernelRenderCircles<<<gridDim, blockDim>>>();
+    // IMPLEMENTATION: Use a 2D grid of threads for pixel-based approach
+    // Each thread processes one pixel, so we use a 2D grid that matches the image dimensions
+    dim3 blockDim(16, 16);  // 16x16 = 256 threads per block is efficient
+    dim3 gridDim(
+        (image->width + blockDim.x - 1) / blockDim.x,   // Ceiling division for width
+        (image->height + blockDim.y - 1) / blockDim.y   // Ceiling division for height
+    );
+
+    // Launch the pixel-centric kernel instead of the circle-centric one
+    kernelRenderPixels<<<gridDim, blockDim>>>();
+    
+    // Arbab here we have ended - Part 3: Update render function
+    
     cudaDeviceSynchronize();
 }
