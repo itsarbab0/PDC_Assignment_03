@@ -62,6 +62,8 @@ void saxpyCuda(int N, float alpha, float* xarray, float* yarray, float* resultar
     // above) but you cannot access the contents these buffers from
     // this thread. CPU threads cannot issue loads and stores from GPU
     // memory!
+
+
     float* device_x = nullptr;
     float* device_y = nullptr;
     float* device_result = nullptr;
@@ -74,7 +76,16 @@ void saxpyCuda(int N, float alpha, float* xarray, float* yarray, float* resultar
     // you need to write for this part of the assignment:
     //
     // https://devblogs.nvidia.com/easy-introduction-cuda-c-and-c/
-    //
+
+
+    // Yahan se Hamny is part ki implementation karni thee 
+    // isme hamny basic kam karna tha jese memory allocation karna GPU ko 
+    // Os k bad data bhejna GPU user host se 
+    // aur phir GPU se data wapis le k ana tha host par
+    // aur phir GPU ki memory free karni thi 
+    cudaMalloc(&device_x, N * sizeof(float));
+    cudaMalloc(&device_y, N * sizeof(float));
+    cudaMalloc(&device_result, N * sizeof(float));
         
     // start timing after allocation of device memory
     double startTime = CycleTimer::currentSeconds();
@@ -82,16 +93,27 @@ void saxpyCuda(int N, float alpha, float* xarray, float* yarray, float* resultar
     //
     // CS149 TODO: copy input arrays to the GPU using cudaMemcpy
     //
+    cudaMemcpy(device_x, xarray, N * sizeof(float), cudaMemcpyHostToDevice);
+    cudaMemcpy(device_y, yarray, N * sizeof(float), cudaMemcpyHostToDevice);
 
+    // Add timing for kernel execution only
+    double kernelStartTime = CycleTimer::currentSeconds();
    
     // run CUDA kernel. (notice the <<< >>> brackets indicating a CUDA
     // kernel launch) Execution on the GPU occurs here.
     saxpy_kernel<<<blocks, threadsPerBlock>>>(N, alpha, device_x, device_y, device_result);
+    
+    // Wait for kernel to complete
+    cudaDeviceSynchronize();
+    
+    double kernelEndTime = CycleTimer::currentSeconds();
+    double kernelDuration = kernelEndTime - kernelStartTime;
+    printf("CUDA kernel time: %.3f ms\t\t[%.3f GB/s]\n", 1000.f * kernelDuration, GBPerSec(totalBytes, kernelDuration));
 
     //
     // CS149 TODO: copy result from GPU back to CPU using cudaMemcpy
     //
-
+    cudaMemcpy(resultarray, device_result, N * sizeof(float), cudaMemcpyDeviceToHost);
     
     // end timing after result has been copied back into host memory
     double endTime = CycleTimer::currentSeconds();
@@ -108,6 +130,12 @@ void saxpyCuda(int N, float alpha, float* xarray, float* yarray, float* resultar
     //
     // CS149 TODO: free memory buffers on the GPU using cudaFree
     //
+    cudaFree(device_x);
+    cudaFree(device_y);
+    cudaFree(device_result);
+
+
+    //////   Yahan tak hamara kam pehly part ka tha
     
 }
 
