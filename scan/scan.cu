@@ -27,6 +27,33 @@ static inline int nextPow2(int n) {
     return n;
 }
 
+// Kernel for upsweep phase
+__global__ void upsweep_kernel(int* result, int two_d, int two_dplus1, int N) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    i = i * two_dplus1;
+    
+    if (i + two_dplus1 - 1 < N) {
+        result[i + two_dplus1 - 1] += result[i + two_d - 1];
+    }
+}
+
+// Kernel for downsweep phase
+__global__ void downsweep_kernel(int* result, int two_d, int two_dplus1, int N) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    i = i * two_dplus1;
+    
+    if (i + two_dplus1 - 1 < N) {
+        int t = result[i + two_d - 1];
+        result[i + two_d - 1] = result[i + two_dplus1 - 1];
+        result[i + two_dplus1 - 1] += t;
+    }
+}
+
+// Kernel to set the last element to 0 (identity element for sum)
+__global__ void set_last_element_kernel(int* result, int N) {
+    result[N-1] = 0;
+}
+
 // exclusive_scan --
 //
 // Implementation of an exclusive scan on global memory array `input`,
@@ -42,21 +69,127 @@ static inline int nextPow2(int n) {
 // Also, as per the comments in cudaScan(), you can implement an
 // "in-place" scan, since the timing harness makes a copy of input and
 // places it in result
+
+///////==========================================================================================================
+
+//////   Ab is part me hamny scan.cu me hamain prefix sum lena thaa 
+//////  is k liye ye function aur is k neechy wala repeate ka funtion likhna thaa
 void exclusive_scan(int* input, int N, int* result)
 {
+    // We're already given the input copied to result, so we can perform an in-place scan
 
-    // CS149 TODO:
-    //
-    // Implement your exclusive scan implementation here.  Keep in
-    // mind that although the arguments to this function are device
-    // allocated arrays, this is a function that is running in a thread
-    // on the CPU.  Your implementation will need to make multiple calls
-    // to CUDA kernel functions (that you must write) to implement the
-    // scan.
-
-
+    // Round up to next power of 2
+    int rounded_N = nextPow2(N);
+    
+    // upsweep phase
+    for (int two_d = 1; two_d <= rounded_N/2; two_d *= 2) {
+        int two_dplus1 = 2 * two_d;
+        int num_blocks = (rounded_N + two_dplus1 - 1) / two_dplus1;
+        int threads_per_block = THREADS_PER_BLOCK;
+        
+        // Ensure we don't have empty blocks
+        if (num_blocks > 0) {
+            upsweep_kernel<<<num_blocks, threads_per_block>>>(result, two_d, two_dplus1, rounded_N);
+            cudaDeviceSynchronize();
+        }
+    }
+    
+    // Set the last element to 0 (identity element for sum)
+    set_last_element_kernel<<<1, 1>>>(result, rounded_N);
+    cudaDeviceSynchronize();
+    
+    // downsweep phase
+    for (int two_d = rounded_N/2; two_d >= 1; two_d /= 2) {
+        int two_dplus1 = 2 * two_d;
+        int num_blocks = (rounded_N + two_dplus1 - 1) / two_dplus1;
+        int threads_per_block = THREADS_PER_BLOCK;
+        
+        // Ensure we don't have empty blocks
+        if (num_blocks > 0) {
+            downsweep_kernel<<<num_blocks, threads_per_block>>>(result, two_d, two_dplus1, rounded_N);
+            cudaDeviceSynchronize();
+        }
+    }
 }
 
+// Kernel for marking repeats: sets 1 where input[i] == input[i+1], 0 otherwise
+__global__ void mark_repeats_kernel(int* input, int* output, int length) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    
+    if (idx < length - 1) { // Ensure we don't go beyond array bounds
+        output[idx] = (input[idx] == input[idx + 1]) ? 1 : 0;
+    } else if (idx == length - 1) {
+        output[idx] = 0; // Last element can't have a repeat
+    }
+}
+
+// Kernel to write the output indices where repeats were found
+__global__ void write_repeats_indices_kernel(int* flags, int* indices, int length) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    
+    if (idx < length - 1 && flags[idx] == 1) {
+        indices[flags[idx + length - 1]] = idx;
+    }
+}
+
+// find_repeats --
+//
+// Given an array of integers `device_input`, returns an array of all
+// indices `i` for which `device_input[i] == device_input[i+1]`.
+//
+// Returns the total number of pairs found
+int find_repeats(int* device_input, int length, int* device_output) {
+    int rounded_length = nextPow2(length);
+    
+    // Temporary storage for flags and scanned flags
+    int* device_flags;
+    cudaMalloc(&device_flags, rounded_length * sizeof(int));
+    
+    // Set flags where input[i] == input[i+1]
+    int blocks = (length + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK;
+    mark_repeats_kernel<<<blocks, THREADS_PER_BLOCK>>>(device_input, device_flags, length);
+    cudaDeviceSynchronize();
+    
+    // Perform exclusive scan on the flags
+    exclusive_scan(device_flags, rounded_length, device_flags);
+    
+    // Copy the total count (last element + last flag)
+    int total_repeats = 0;
+    int last_flag = 0;
+    
+    // Get the last flag value (1 or 0)
+    if (length > 0) {
+        cudaMemcpy(&last_flag, &device_flags[length-1], sizeof(int), cudaMemcpyDeviceToHost);
+    }
+    
+    // Get the total from the last element of the scan
+    if (length > 0) {
+        int temp = 0;
+        cudaMemcpy(&temp, &device_flags[length], sizeof(int), cudaMemcpyDeviceToHost);
+        total_repeats = temp;
+    }
+    
+    // Adjust for the last element if it's a repeat
+    if (length > 0) {
+        total_repeats = total_repeats + last_flag;
+    }
+    
+    // If no repeats found, cleanup and return
+    if (total_repeats == 0) {
+        cudaFree(device_flags);
+        return 0;
+    }
+    
+    // Write the output indices
+    write_repeats_indices_kernel<<<blocks, THREADS_PER_BLOCK>>>(device_flags, device_output, length);
+    cudaDeviceSynchronize();
+    
+    cudaFree(device_flags);
+    
+    return total_repeats;
+}
+///////  Yahan tak ka part hamny karna tha
+///////==========================================================================================================
 
 //
 // cudaScan --
@@ -138,30 +271,6 @@ double cudaScanThrust(int* inarray, int* end, int* resultarray) {
 
     double overallDuration = endTime - startTime;
     return overallDuration; 
-}
-
-
-// find_repeats --
-//
-// Given an array of integers `device_input`, returns an array of all
-// indices `i` for which `device_input[i] == device_input[i+1]`.
-//
-// Returns the total number of pairs found
-int find_repeats(int* device_input, int length, int* device_output) {
-
-    // CS149 TODO:
-    //
-    // Implement this function. You will probably want to
-    // make use of one or more calls to exclusive_scan(), as well as
-    // additional CUDA kernel launches.
-    //    
-    // Note: As in the scan code, the calling code ensures that
-    // allocated arrays are a power of 2 in size, so you can use your
-    // exclusive_scan function with them. However, your implementation
-    // must ensure that the results of find_repeats are correct given
-    // the actual array length.
-
-    return 0; 
 }
 
 

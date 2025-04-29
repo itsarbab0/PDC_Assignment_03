@@ -1,5 +1,4 @@
 #include <stdio.h>
-
 #include <cuda.h>
 #include <cuda_runtime.h>
 #include <driver_functions.h>
@@ -38,6 +37,9 @@ saxpy_kernel(int N, float alpha, float* x, float* y, float* result) {
 // memory on the GPU using CUDA API functions, uses CUDA API functions
 // to transfer data from the CPU's memory address space to GPU memory
 // address space, and launches the CUDA kernel function on the GPU.
+
+///////==========================================================================================================
+
 void saxpyCuda(int N, float alpha, float* xarray, float* yarray, float* resultarray) {
 
     // must read both input arrays (xarray and yarray) and write to
@@ -136,8 +138,9 @@ void saxpyCuda(int N, float alpha, float* xarray, float* yarray, float* resultar
 
 
     //////   Yahan tak hamara kam pehly part ka tha
-    
+
 }
+///////==========================================================================================================
 
 void printCudaInfo() {
 
